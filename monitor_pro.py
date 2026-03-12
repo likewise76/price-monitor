@@ -248,9 +248,11 @@ log_placeholder = st.empty()
 if start_btn:
     q = normalize_spaces(query)
     if not q:
+        st.session_state["search_result"] = None
         log_placeholder.error("검색어를 입력해주세요.")
         st.stop()
     if price_filter_enabled and min_price > max_price:
+        st.session_state["search_result"] = None
         log_placeholder.error("최소 가격이 최대 가격보다 클 수 없습니다.")
         st.stop()
 
@@ -335,6 +337,7 @@ if start_btn:
             "debug_raw_titles": debug_raw_titles,
             "sort": sort,
             "exclude_val": exclude_val,
+            "query": q,
         }
         log_placeholder.success("완료되었습니다.")
 
@@ -420,7 +423,7 @@ if st.session_state.get("search_result"):
 
     output = build_excel(df_for_excel)
     today_str = datetime.now().strftime("%Y%m%d")
-    file_name = f"모니터링_{safe_filename(df_for_excel['제품명'].iloc[0] if len(df_for_excel) else '결과')}_{today_str}.xlsx"
+    file_name = f"모니터링_{safe_filename(res.get('query', '결과'))}_{today_str}.xlsx"
 
     st.download_button(
         label="엑셀 리포트 다운로드",
