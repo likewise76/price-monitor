@@ -267,7 +267,7 @@ if start_btn:
         for i in range(int(pages)):
             start = 1 + i * int(display)
             if start > 1000:
-                break  # start 최대 1000 :contentReference[oaicite:2]{index=2}
+                break  # start 최대 1000
 
             data = call_naver_shop_api(query=q, display=int(display), start=int(start), sort=sort, exclude=exclude_val)
             items = data.get("items", [])
@@ -319,6 +319,7 @@ if start_btn:
 
         if not all_rows:
             log_placeholder.warning("조건에 맞는 상품이 없습니다.")
+            st.session_state["search_result"] = None
             with st.expander("진단(왜 0건인지 확인)", expanded=True):
                 st.write(f"스캔 수: {scanned_items}개")
                 st.write(f"정렬: {sort}, exclude: {exclude_val if exclude_val else '(미사용)'}")
@@ -328,95 +329,109 @@ if start_btn:
             st.stop()
 
         df = pd.DataFrame(all_rows).drop_duplicates(subset=["링크"]).sort_values("판매가").reset_index(drop=True)
-
-        # =========================================================
-        # [6] 매칭키워드 선택(체크) 필터
-        # =========================================================
-        # 매칭키워드 후보 목록 만들기
-        terms = []
-        for s in df["매칭키워드"].fillna(""):
-            parts = [p.strip() for p in str(s).split(",") if p.strip()]
-            for p in parts:
-                if p not in terms:
-                    terms.append(p)
-
-        st.markdown("### 결과")
-        st.info(f"스캔 {scanned_items}개 중 유효 {len(df)}개")
-
-        # 매칭키워드가 있을 때만 노출
-        df_view = df.copy()
-        if terms:
-            st.markdown("### 매칭키워드 선택(필터)")
-            selected_terms = st.multiselect(
-                "표시할 매칭키워드(복수 선택 가능)",
-                options=terms,
-                default=terms,
-            )
-            apply_term_filter = st.checkbox("선택한 매칭키워드로 필터 적용", value=True)
-
-            if apply_term_filter and selected_terms:
-                def hit_selected(s: str) -> bool:
-                    s = str(s or "")
-                    return any(t in s for t in selected_terms)
-
-                df_view = df_view[df_view["매칭키워드"].apply(hit_selected)].copy()
-
-        # 요약 지표는 df_view 기준으로 보여드리는 편이 직관적입니다.
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("표시 상품", f"{len(df_view)}개")
-        m2.metric("현재 최저가", f"{df_view['판매가'].min():,}원" if len(df_view) else "-")
-        m3.metric("미준수 건수", f"{len(df_view[df_view['차액'] < 0])}개" if len(df_view) else "0개", delta_color="inverse")
-        m4.metric("정렬", sort)
-
-        st.markdown("### 상세 모니터링 리스트")
-        df_display = df_view.copy()
-        df_display["판매 링크"] = df_display["링크"]
-
-        st.dataframe(
-            df_display[["상태", "판매처", "판매가", "가이드가", "차액", "제품명", "매칭키워드", "판매 링크"]],
-            column_config={
-                "판매 링크": st.column_config.LinkColumn("바로가기", display_text="링크이동"),
-                "판매가": st.column_config.NumberColumn(format="%d원"),
-                "가이드가": st.column_config.NumberColumn(format="%d원"),
-                "차액": st.column_config.NumberColumn(format="%d원"),
-            },
-            use_container_width=True,
-            height=600,
-            hide_index=True,
-        )
-
-        # =========================================================
-        # [7] 엑셀 다운로드(df_view 기준)
-        # =========================================================
-        df_for_excel = df_view.copy()
-        df_for_excel.insert(df_for_excel.columns.get_loc("링크") + 1, "원본 URL(복사용)", df_for_excel["링크"])
-        df_for_excel.insert(df_for_excel.columns.get_loc("링크") + 1, "판매 링크(클릭)", "바로가기")
-        df_for_excel = df_for_excel.drop(columns=["링크"])
-        df_for_excel = df_for_excel[
-            ["상태", "판매처", "판매가", "가이드가", "차액", "제품명", "매칭키워드", "판매 링크(클릭)", "원본 URL(복사용)"]
-        ]
-
-        output = build_excel(df_for_excel)
-        today_str = datetime.now().strftime("%Y%m%d")
-        file_name = f"모니터링_{safe_filename(q)}_{today_str}.xlsx"
-
-        st.download_button(
-            label="엑셀 리포트 다운로드",
-            data=output,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-        )
-
-        with st.expander("진단(매칭 확인)", expanded=False):
-            st.write(f"정렬: {sort}, exclude: {exclude_val if exclude_val else '(미사용)'}")
-            st.write("원본 title 예시(<b> 매칭 확인용):")
-            for t in debug_raw_titles:
-                st.write(t)
-
+        st.session_state["search_result"] = {
+            "df": df,
+            "scanned_items": scanned_items,
+            "debug_raw_titles": debug_raw_titles,
+            "sort": sort,
+            "exclude_val": exclude_val,
+        }
         log_placeholder.success("완료되었습니다.")
 
     except Exception as e:
         log_placeholder.error(f"오류 발생: {e}")
         with st.expander("상세 오류 보기"):
             st.write(e)
+
+# =========================================================
+# [6] 결과 표시 (session_state 기반 — 필터 변경 시에도 유지)
+# =========================================================
+if st.session_state.get("search_result"):
+    res = st.session_state["search_result"]
+    df = res["df"]
+    scanned_items = res["scanned_items"]
+    debug_raw_titles = res["debug_raw_titles"]
+    _sort = res["sort"]
+    _exclude_val = res["exclude_val"]
+
+    # 매칭키워드 후보 목록 만들기
+    terms = []
+    for s in df["매칭키워드"].fillna(""):
+        parts = [p.strip() for p in str(s).split(",") if p.strip()]
+        for p in parts:
+            if p not in terms:
+                terms.append(p)
+
+    st.markdown("### 결과")
+    st.info(f"스캔 {scanned_items}개 중 유효 {len(df)}개")
+
+    # 매칭키워드가 있을 때만 노출
+    df_view = df.copy()
+    if terms:
+        st.markdown("### 매칭키워드 선택(필터)")
+        selected_terms = st.multiselect(
+            "표시할 매칭키워드(복수 선택 가능)",
+            options=terms,
+            default=terms,
+        )
+        apply_term_filter = st.checkbox("선택한 매칭키워드로 필터 적용", value=True)
+
+        if apply_term_filter and selected_terms:
+            def hit_selected(s: str) -> bool:
+                s = str(s or "")
+                return any(t in s for t in selected_terms)
+
+            df_view = df_view[df_view["매칭키워드"].apply(hit_selected)].copy()
+
+    # 요약 지표
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("표시 상품", f"{len(df_view)}개")
+    m2.metric("현재 최저가", f"{df_view['판매가'].min():,}원" if len(df_view) else "-")
+    m3.metric("미준수 건수", f"{len(df_view[df_view['차액'] < 0])}개" if len(df_view) else "0개", delta_color="inverse")
+    m4.metric("정렬", _sort)
+
+    st.markdown("### 상세 모니터링 리스트")
+    df_display = df_view.copy()
+    df_display["판매 링크"] = df_display["링크"]
+
+    st.dataframe(
+        df_display[["상태", "판매처", "판매가", "가이드가", "차액", "제품명", "매칭키워드", "판매 링크"]],
+        column_config={
+            "판매 링크": st.column_config.LinkColumn("바로가기", display_text="링크이동"),
+            "판매가": st.column_config.NumberColumn(format="%d원"),
+            "가이드가": st.column_config.NumberColumn(format="%d원"),
+            "차액": st.column_config.NumberColumn(format="%d원"),
+        },
+        use_container_width=True,
+        height=600,
+        hide_index=True,
+    )
+
+    # =========================================================
+    # [7] 엑셀 다운로드(df_view 기준)
+    # =========================================================
+    df_for_excel = df_view.copy()
+    df_for_excel.insert(df_for_excel.columns.get_loc("링크") + 1, "원본 URL(복사용)", df_for_excel["링크"])
+    df_for_excel.insert(df_for_excel.columns.get_loc("링크") + 1, "판매 링크(클릭)", "바로가기")
+    df_for_excel = df_for_excel.drop(columns=["링크"])
+    df_for_excel = df_for_excel[
+        ["상태", "판매처", "판매가", "가이드가", "차액", "제품명", "매칭키워드", "판매 링크(클릭)", "원본 URL(복사용)"]
+    ]
+
+    output = build_excel(df_for_excel)
+    today_str = datetime.now().strftime("%Y%m%d")
+    file_name = f"모니터링_{safe_filename(df_for_excel['제품명'].iloc[0] if len(df_for_excel) else '결과')}_{today_str}.xlsx"
+
+    st.download_button(
+        label="엑셀 리포트 다운로드",
+        data=output,
+        file_name=file_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+    )
+
+    with st.expander("진단(매칭 확인)", expanded=False):
+        st.write(f"정렬: {_sort}, exclude: {_exclude_val if _exclude_val else '(미사용)'}")
+        st.write("원본 title 예시(<b> 매칭 확인용):")
+        for t in debug_raw_titles:
+            st.write(t)
